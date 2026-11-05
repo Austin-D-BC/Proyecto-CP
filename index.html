@@ -190,7 +190,7 @@ const store={
   get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return k in mem?mem[k]:d}},
   set(k,v){mem[k]=v;try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 };
-const BAKED_ENDPOINT='';   // ← pega aquí la URL del receptor (…/exec) y todos los equipos quedan configurados
+const BAKED_ENDPOINT='https://script.google.com/macros/s/AKfycbza_CZM5tx2qgNr-KZDJovVehz_ZK1F7aVc3T3MXuwr6Hir71bHcrHsF1Qo8IykZVnK/exec';   // ← pega aquí la URL del receptor (…/exec) y todos los equipos quedan configurados
 function rid(){try{return crypto.randomUUID()}catch(e){return 'x'+Date.now().toString(36)+Math.random().toString(36).slice(2,10)}}
 let DEV=store.get('dp_dev',null);
 if(!DEV){DEV={id:rid()};store.set('dp_dev',DEV)}

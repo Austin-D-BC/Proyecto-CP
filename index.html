@@ -803,6 +803,7 @@ async function sendPhotos(){
     const r=await api('foto',{id:f.id,repId:f.repId,kind:f.kind,name:f.name,mime:f.mime,data:f.data});
     if(!r)break;
     if(r.ok){try{await idb.tx('readwrite',s=>s.delete(f.id))}catch(e){}}
+    else{toast('No se pudo subir una foto ('+(r.error||'error del servidor')+'). Las fotos siguen guardadas en este equipo; avisa al programador.');break}
   }
 }
 let syncing=false;

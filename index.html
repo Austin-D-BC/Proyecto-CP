@@ -1003,7 +1003,7 @@ function renderRegister(){
     <p>${esc(e.num||'(sin N°)')} · ${esc(e.ut)} · ${esc(udesc(e.ut))}${nf?` · 📷 ${nf}`:''}</p>
     <div class="acts"><button class="btn s" data-edit="${esc(r.id)}">Modificar</button><button class="btn s bad" data-del="${esc(r.id)}">${r.base?'Quitar modificación':'Quitar'}</button></div></div>`};
   page.innerHTML=(edit?'':`<div class="panel"><h3>Subir Excel de equipos a registrar</h3>
-    <div style="color:var(--mute);font-size:13px">Sube el Excel con el formato de la hoja EQUIPO PRINCIPAL (el que creas en SAP). Se leen los equipos desde la fila 7 y se cargan con todos sus datos, sin escribirlos uno por uno. Si un equipo ya estaba «por crear» en la página, se completa con su N° y sus datos.</div>
+    <div style="color:var(--mute);font-size:13px">Del formato, se leen los equipos desde la fila 7.</div>
     <div class="acts"><input type="file" id="xlFile" accept=".xlsx"><a class="btn" href="plantilla.xlsx" download="FORMATO_EQUIPOS_VACIO.xlsx">Descargar formato vacío</a></div><div id="xlPrev"></div></div>`)+`<div class="panel"><h3>${edit?'Modificar equipo':'Registrar equipo'}</h3>
     <div style="color:var(--mute);font-size:13px">Mismos encabezados de la pestaña EQUIPO PRINCIPAL. Al guardar, el equipo se ve en el mapa de todos y lo puedes descargar en Excel.</div>
     ${fotosReg(pf.fotos)}

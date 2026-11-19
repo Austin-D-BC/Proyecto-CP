@@ -348,10 +348,13 @@ async function flushOps(){
   flushing=true;
   try{
     while(OPQ.length){
-      const r=await api(OPQ[0].a,OPQ[0]);
-      if(!r)break;                                   // sin señal: se reintenta luego
-      if(!r.ok&&r.error==='auth'){toast('Tu clave de programador ya no es válida. Vuelve a ingresar.');break}
-      OPQ.shift();saveOps();
+      // varios equipos registrados seguidos (carga de Excel) se envían de 5 en 5 para ir más rápido
+      let n=1;
+      if(OPQ[0].a==='reg_save'){const ids=new Set([OPQ[0].registro.id]);while(n<5&&OPQ[n]&&OPQ[n].a==='reg_save'&&!ids.has(OPQ[n].registro.id)){ids.add(OPQ[n].registro.id);n++}}
+      const rs=await Promise.all(OPQ.slice(0,n).map(o=>api(o.a,o)));
+      if(rs.some(r=>!r))break;                       // sin señal: se reintenta luego
+      if(rs.some(r=>!r.ok&&r.error==='auth')){toast('Tu clave de programador ya no es válida. Vuelve a ingresar.');break}
+      OPQ.splice(0,n);saveOps();
     }
   }finally{flushing=false}
 }
@@ -999,7 +1002,9 @@ function renderRegister(){
     return `<div class="rep"><div class="top"><label class="chkrow"><input type="checkbox" data-sel="${esc(r.id)}" ${REGSEL.has(r.id)?'checked':''}> <b>${esc(e.name)}</b></label><span class="b ${r.base?'blue':'ok'}">${r.base?'Modificado':'Nuevo'}</span></div>
     <p>${esc(e.num||'(sin N°)')} · ${esc(e.ut)} · ${esc(udesc(e.ut))}${nf?` · 📷 ${nf}`:''}</p>
     <div class="acts"><button class="btn s" data-edit="${esc(r.id)}">Modificar</button><button class="btn s bad" data-del="${esc(r.id)}">${r.base?'Quitar modificación':'Quitar'}</button></div></div>`};
-  page.innerHTML=`<div class="panel"><h3>${edit?'Modificar equipo':'Registrar equipo'}</h3>
+  page.innerHTML=(edit?'':`<div class="panel"><h3>Subir Excel de equipos a registrar</h3>
+    <div style="color:var(--mute);font-size:13px">Sube el Excel con el formato de la hoja EQUIPO PRINCIPAL (el que creas en SAP). Se leen los equipos desde la fila 7 y se cargan con todos sus datos, sin escribirlos uno por uno. Si un equipo ya estaba «por crear» en la página, se completa con su N° y sus datos.</div>
+    <div class="acts"><input type="file" id="xlFile" accept=".xlsx"><a class="btn" href="plantilla.xlsx" download="FORMATO_EQUIPOS_VACIO.xlsx">Descargar formato vacío</a></div><div id="xlPrev"></div></div>`)+`<div class="panel"><h3>${edit?'Modificar equipo':'Registrar equipo'}</h3>
     <div style="color:var(--mute);font-size:13px">Mismos encabezados de la pestaña EQUIPO PRINCIPAL. Al guardar, el equipo se ve en el mapa de todos y lo puedes descargar en Excel.</div>
     ${fotosReg(pf.fotos)}
     <div class="formgrid" style="margin-top:12px">${key.map(i=>field(byI(i))).join('')}</div>
@@ -1038,6 +1043,7 @@ function renderRegister(){
   });
   attachAC(page.querySelector('input[data-i="37"]'),()=>utItems(''),()=>{});
   const cancel=$('#rgCancel');if(cancel)cancel.onclick=()=>{window._regRep=null;renderRegister()};
+  const xf=$('#xlFile');if(xf)xf.onchange=ev=>{const f=ev.target.files[0];if(f)onXlsx(f);ev.target.value=''};
 
   $('#rgSave').onclick=()=>{
     const vals={};page.querySelectorAll('[data-i]').forEach(x=>{vals[x.dataset.i]=x.value.trim()});
@@ -1127,6 +1133,108 @@ async function buildXlsx(recs){
   xml=xml.replace('</sheetData>',rows+'</sheetData>').replace(/<dimension ref="[^"]*"\/>/,`<dimension ref="A1:AU${6+recs.length}"/>`);
   files['xl/worksheets/sheet1.xml']=new TextEncoder().encode(xml);
   return zipStore(files);
+}
+
+/* ---------- subir Excel de equipos (formato EQUIPO PRINCIPAL) ---------- */
+const colIdx=ref=>{let n=0;for(const ch of ref.replace(/[^A-Za-z]/g,'').toUpperCase())n=n*26+ch.charCodeAt(0)-64;return n-1};
+const fmtNum=v=>{const x=parseFloat(v);if(!isFinite(x))return String(v);return Number.isInteger(x)?String(x):String(+x.toFixed(10))};
+function normDate(v,numeric){
+  v=String(v).trim();if(!v)return '';
+  if(numeric||/^\d+(\.\d+)?$/.test(v)){
+    const x=parseFloat(v);
+    if(x>20000&&x<80000){const d=new Date(Date.UTC(1899,11,30)+Math.round(x)*864e5);return d.getUTCFullYear()+String(d.getUTCMonth()+1).padStart(2,'0')+String(d.getUTCDate()).padStart(2,'0')}
+    return fmtNum(v);
+  }
+  let m=v.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);if(m)return m[1]+m[2].padStart(2,'0')+m[3].padStart(2,'0');
+  m=v.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/);if(m)return m[3]+m[2].padStart(2,'0')+m[1].padStart(2,'0');
+  return v;
+}
+async function readXlsxRows(buf){
+  const files=await unzip(buf),td=new TextDecoder(),dom=t=>new DOMParser().parseFromString(t,'application/xml');
+  const wb=dom(td.decode(files['xl/workbook.xml'])),sheets=[...wb.getElementsByTagName('sheet')];
+  const sh=sheets.find(x=>norm(x.getAttribute('name')||'')==='equipo principal')||sheets[0];
+  if(!sh)throw new Error('sin hojas');
+  const rid=sh.getAttribute('r:id')||sh.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id');
+  const rels=dom(td.decode(files['xl/_rels/workbook.xml.rels']));
+  const rel=[...rels.getElementsByTagName('Relationship')].find(x=>x.getAttribute('Id')===rid);
+  let path=rel.getAttribute('Target');path=path.startsWith('/')?path.slice(1):'xl/'+path;
+  const ss=[];
+  if(files['xl/sharedStrings.xml'])[...dom(td.decode(files['xl/sharedStrings.xml'])).getElementsByTagName('si')].forEach(si=>ss.push([...si.getElementsByTagName('t')].filter(t=>t.parentNode.nodeName!=='rPh').map(t=>t.textContent).join('')));
+  const rows={};
+  [...dom(td.decode(files[path])).getElementsByTagName('row')].forEach(row=>{
+    const cells={};
+    [...row.getElementsByTagName('c')].forEach(c=>{
+      const t=c.getAttribute('t'),vEl=c.getElementsByTagName('v')[0];let v='',num=false;
+      if(t==='inlineStr')v=[...c.getElementsByTagName('t')].map(x=>x.textContent).join('');
+      else if(vEl){const raw=vEl.textContent;if(t==='s')v=ss[+raw]||'';else if(t==='b')v=raw==='1'?'TRUE':'FALSE';else if(t==='e')v='';else if(t==='str')v=raw;else{v=raw;num=true}}   // fórmulas: se lee el valor ya calculado
+      v=String(v).trim();if(v!=='')cells[colIdx(c.getAttribute('r'))]={v,num};
+    });
+    rows[+row.getAttribute('r')]=cells;
+  });
+  return rows;
+}
+/* Convierte las filas del Excel en registros: nuevos, o completando equipos que ya existen (por N° o por nombre+ubicación) */
+function planImport(rows){
+  const H=DATA.heads,h3=rows[3]||{};
+  if(H.filter(h=>h3[h.i]&&norm(h3[h.i].v)===norm(h.n)).length<20)throw new Error('formato');
+  const used=new Set(),items=[],now=new Date().toISOString();
+  Object.keys(rows).map(Number).filter(r=>r>=7).sort((a,b)=>a-b).forEach(rn=>{
+    const cells=rows[rn];if(Object.keys(cells).length<=1)return;           // títulos de sección ("ETAPA DE ENTRADA…")
+    const all={};
+    H.forEach(h=>{
+      const c=cells[h.i];if(!c)return;let v=c.v;
+      if(fieldKind(h.i)==='date')v=normDate(v,c.num);else if(c.num)v=fmtNum(v);
+      if((h.i===22||h.i===33)&&/^\d+$/.test(v))v=v.padStart(4,'0');
+      if(h.i===19&&/^\d$/.test(v))v='0'+v;
+      if(v!=='')all[h.i]=v;
+    });
+    if(!all[3]&&!all[4])return;
+    const num=all[3]||'',nn=norm(all[4]||''),ut=all[37]||'',free=x=>!used.has(x.k);
+    let e=null;
+    if(num)e=EQ.find(x=>x.num===num&&free(x));
+    if(!e&&nn)e=EQ.find(x=>free(x)&&!x.num&&norm(x.name)===nn&&(!ut||!x.ut0||x.ut0===ut));
+    let rec,kind;
+    if(e){
+      used.add(e.k);
+      if(e.regId){const old=REGS.find(r=>r.id===e.regId);rec={...old,all:{...old.all,...all},ts:now,by:SES.name};kind='reg'}
+      else{const core={3:e.num,4:e.name,5:e.tipo,15:e.fab,17:e.mod,21:e.ser,27:e.clas,37:e.ut0};Object.keys(core).forEach(k=>{if(!core[k])delete core[k]});
+        rec={id:newId('E'),base:e.k,all:{...core,...all},ts:now,by:SES.name};kind='upd'}
+    }else{rec={id:newId('E'),base:null,all,ts:now,by:SES.name};kind='new'}
+    const w=[],U=rec.all[37];
+    if(!U)w.push('Sin ubicación técnica');else if(!nodes[U])w.push('La ubicación técnica no está en la lista');
+    Object.keys(all).forEach(i=>{
+      const h=H.find(x=>x.i===+i),mx=maxLen(+i);
+      if(fieldKind(+i)==='date'){if(!validDate(all[i]))w.push(`«${h.n}»: fecha no válida (${all[i]})`)}
+      else if(mx&&all[i].length>mx)w.push(`«${h.n}» pasa de ${mx} caracteres`);
+    });
+    items.push({rn,kind,rec,warns:w,on:true});
+  });
+  return items;
+}
+let XLPLAN=[];
+async function onXlsx(file){
+  const box=$('#xlPrev');box.innerHTML='<div class="empty">Leyendo el Excel…</div>';
+  try{XLPLAN=planImport(await readXlsxRows(await file.arrayBuffer()))}
+  catch(e){XLPLAN=[];box.innerHTML='<div class="err">No pude leer el archivo. Debe ser un .xlsx con el formato de la hoja EQUIPO PRINCIPAL (encabezados en la fila 3).</div>';return}
+  if(!XLPLAN.length){box.innerHTML='<div class="empty">No encontré equipos en el archivo (se leen desde la fila 7).</div>';return}
+  drawPlan(file.name);
+}
+function drawPlan(fname){
+  const box=$('#xlPrev'),n=XLPLAN.filter(x=>x.on).length,c=k=>XLPLAN.filter(x=>x.kind===k).length,KL={new:['ok','Nuevo'],upd:['blue','Completa equipo existente'],reg:['blue','Actualiza equipo registrado']};
+  box.innerHTML=`<div style="margin:10px 0;font-size:13px"><b>${XLPLAN.length} equipos encontrados</b>${fname?' en '+esc(fname):''}: ${c('new')} nuevos, ${c('upd')+c('reg')} completan o actualizan equipos que ya estaban. Quita la marca de los que no quieras cargar.</div>
+    <div class="acts" style="margin:0 0 10px"><button class="btn p" id="xlGo">Importar ${n} equipo(s)</button><button class="btn" id="xlAll">${n===XLPLAN.length?'Desmarcar todos':'Marcar todos'}</button><button class="btn" id="xlNo">Cancelar</button></div>
+    <div style="max-height:420px;overflow:auto">${XLPLAN.map((x,i)=>{const a=x.rec.all;return `<div class="rep"><div class="top"><label class="chkrow"><input type="checkbox" data-xi="${i}" ${x.on?'checked':''}> <b>${esc(a[4]||'(sin nombre)')}</b></label><span class="b ${KL[x.kind][0]}">${KL[x.kind][1]}</span></div>
+      <p>${esc(a[3]||'(sin N°)')} · ${esc(a[37]||'sin ubicación')}${a[37]&&nodes[a[37]]?' · '+esc(udesc(a[37])):''} <span style="color:var(--mute)">· fila ${x.rn}</span></p>
+      ${x.warns.length?`<p style="color:#b45309;font-size:12px">⚠ ${x.warns.slice(0,3).map(esc).join(' · ')}${x.warns.length>3?' · +'+(x.warns.length-3)+' más':''}</p>`:''}</div>`}).join('')}</div>`;
+  box.querySelectorAll('[data-xi]').forEach(b=>b.onchange=()=>{XLPLAN[+b.dataset.xi].on=b.checked;drawPlan(fname)});
+  $('#xlAll').onclick=()=>{const all=XLPLAN.some(x=>!x.on);XLPLAN.forEach(x=>x.on=all);drawPlan(fname)};
+  $('#xlNo').onclick=()=>{XLPLAN=[];box.innerHTML=''};
+  $('#xlGo').onclick=()=>{
+    const sel=XLPLAN.filter(x=>x.on);if(!sel.length)return toast('Marca al menos un equipo.');
+    sel.forEach(x=>saveReg(x.rec));XLPLAN=[];
+    toast(`${sel.length} equipo(s) cargados: ya los ven todos${OPQ.length?' (sincronizando…)':''}.`);
+    window.scrollTo({top:0});renderRegister();
+  };
 }
 
 /* ---------- configuración ---------- */
